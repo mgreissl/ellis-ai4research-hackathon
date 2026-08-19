@@ -1,217 +1,361 @@
 """
-Research Paper Novelty Checker — Flask Backend
-Mock data for now; real embedding-based similarity will be plugged in later.
+Eureka Check — Research Paper Novelty Checker
+Backend with fast vector similarity, domain calibration, and online metadata/date enrichment with SQLite caching.
 """
 
-import json
 import os
-import random
+import re
+import json
+import sqlite3
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+import numpy as np
+import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 
 app = Flask(__name__, static_folder="static")
 
 # ---------------------------------------------------------------------------
-# Mock data — will be replaced by real embedding search later
+# Load data once at startup
 # ---------------------------------------------------------------------------
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+DB_PATH = os.path.join(DATA_DIR, "metadata_cache.db")
 
-MOCK_PAPERS = [
-    {
-        "id": "2301.07041",
-        "title": "Scaling Data-Constrained Language Models",
-        "authors": ["N. Muennighoff", "A. Rush", "B. Barak", "T. Le Scao", "A. Piktus"],
-        "year": 2023,
-        "venue": "NeurIPS 2023",
-        "citations": 312,
-        "abstract": "Large language models have been shown to benefit from scaling both model and data size. However, the amount of available high-quality data is limited. We investigate methods to scale language models when data is constrained, including data repetition and augmentation strategies.",
-        "url": "https://arxiv.org/abs/2301.07041",
-        "similarity": 0.92,
-    },
-    {
-        "id": "2302.13971",
-        "title": "LLaMA: Open and Efficient Foundation Language Models",
-        "authors": ["H. Touvron", "T. Lavril", "G. Izacard", "X. Martinet"],
-        "year": 2023,
-        "venue": "arXiv preprint",
-        "citations": 4521,
-        "abstract": "We introduce LLaMA, a collection of foundation language models ranging from 7B to 65B parameters. We train our models on trillions of tokens and show that it is possible to train state-of-the-art models using publicly available datasets exclusively.",
-        "url": "https://arxiv.org/abs/2302.13971",
-        "similarity": 0.88,
-    },
-    {
-        "id": "2305.18290",
-        "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
-        "authors": ["R. Rafailov", "A. Sharma", "E. Mitchell", "S. Ermon"],
-        "year": 2023,
-        "venue": "NeurIPS 2023",
-        "citations": 1893,
-        "abstract": "We introduce Direct Preference Optimization (DPO), a new parameterization of the reward model in RLHF that enables extracting the optimal policy in closed form, greatly simplifying the fine-tuning process for language models.",
-        "url": "https://arxiv.org/abs/2305.18290",
-        "similarity": 0.85,
-    },
-    {
-        "id": "2203.15556",
-        "title": "Training language models to follow instructions with human feedback",
-        "authors": ["L. Ouyang", "J. Wu", "X. Jiang", "D. Almeida"],
-        "year": 2022,
-        "venue": "NeurIPS 2022",
-        "citations": 7832,
-        "abstract": "Making language models bigger does not inherently make them better at following a user's intent. We show an avenue for aligning language models with user intent on a wide range of tasks by fine-tuning with human feedback (InstructGPT).",
-        "url": "https://arxiv.org/abs/2203.15556",
-        "similarity": 0.82,
-    },
-    {
-        "id": "2005.14165",
-        "title": "Language Models are Few-Shot Learners",
-        "authors": ["T. Brown", "B. Mann", "N. Ryder", "M. Subbiah"],
-        "year": 2020,
-        "venue": "NeurIPS 2020",
-        "citations": 21543,
-        "abstract": "We demonstrate that scaling up language models greatly improves task-agnostic, few-shot performance, sometimes even reaching competitiveness with prior state-of-the-art fine-tuning approaches (GPT-3).",
-        "url": "https://arxiv.org/abs/2005.14165",
-        "similarity": 0.78,
-    },
-    {
-        "id": "2307.09288",
-        "title": "Llama 2: Open Foundation and Fine-Tuned Chat Models",
-        "authors": ["H. Touvron", "L. Martin", "K. Stone", "P. Albert"],
-        "year": 2023,
-        "venue": "arXiv preprint",
-        "citations": 3201,
-        "abstract": "We release Llama 2, a collection of pretrained and fine-tuned large language models (LLMs) ranging in scale from 7 billion to 70 billion parameters. Our fine-tuned LLMs, called Llama 2-Chat, are optimized for dialogue use cases.",
-        "url": "https://arxiv.org/abs/2307.09288",
-        "similarity": 0.76,
-    },
-    {
-        "id": "1706.03762",
-        "title": "Attention Is All You Need",
-        "authors": ["A. Vaswani", "N. Shazeer", "N. Parmar", "J. Uszkoreit"],
-        "year": 2017,
-        "venue": "NeurIPS 2017",
-        "citations": 98234,
-        "abstract": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. Experiments on two machine translation tasks show these models to be superior in quality.",
-        "url": "https://arxiv.org/abs/1706.03762",
-        "similarity": 0.71,
-    },
-    {
-        "id": "2401.02954",
-        "title": "Mixtral of Experts",
-        "authors": ["A. Jiang", "A. Sablayrolles", "A. Roux", "A. Mensch"],
-        "year": 2024,
-        "venue": "arXiv preprint",
-        "citations": 487,
-        "abstract": "We introduce Mixtral 8x7B, a Sparse Mixture of Experts language model. Mixtral outperforms Llama 2 70B on most benchmarks with 6x faster inference, and matches or outperforms GPT-3.5 on most standard benchmarks.",
-        "url": "https://arxiv.org/abs/2401.02954",
-        "similarity": 0.69,
-    },
-    {
-        "id": "2310.06825",
-        "title": "Mistral 7B",
-        "authors": ["A. Jiang", "A. Sablayrolles", "A. Mensch", "C. Bamford"],
-        "year": 2023,
-        "venue": "arXiv preprint",
-        "citations": 1120,
-        "abstract": "We introduce Mistral 7B, a 7-billion-parameter language model engineered for superior performance and efficiency. Mistral 7B outperforms the best open 13B model (Llama 2) across all evaluated benchmarks.",
-        "url": "https://arxiv.org/abs/2310.06825",
-        "similarity": 0.65,
-    },
-    {
-        "id": "2106.09685",
-        "title": "LoRA: Low-Rank Adaptation of Large Language Models",
-        "authors": ["E. Hu", "Y. Shen", "P. Wallis", "Z. Allen-Zhu"],
-        "year": 2021,
-        "venue": "ICLR 2022",
-        "citations": 5432,
-        "abstract": "We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters.",
-        "url": "https://arxiv.org/abs/2106.09685",
-        "similarity": 0.62,
-    },
-    {
-        "id": "2304.08485",
-        "title": "Visual Instruction Tuning",
-        "authors": ["H. Liu", "C. Li", "Q. Wu", "Y. J. Lee"],
-        "year": 2023,
-        "venue": "NeurIPS 2023",
-        "citations": 2150,
-        "abstract": "We present the first attempt to use language-only GPT-4 to generate multimodal language-image instruction-following data. We introduce LLaVA (Large Language and Vision Assistant), an end-to-end trained large multimodal model.",
-        "url": "https://arxiv.org/abs/2304.08485",
-        "similarity": 0.58,
-    },
-    {
-        "id": "2201.11903",
-        "title": "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models",
-        "authors": ["J. Wei", "X. Wang", "D. Schuurmans", "M. Bosma"],
-        "year": 2022,
-        "venue": "NeurIPS 2022",
-        "citations": 6721,
-        "abstract": "We explore how generating a chain of thought — a series of intermediate reasoning steps — significantly improves the ability of large language models to perform complex reasoning tasks.",
-        "url": "https://arxiv.org/abs/2201.11903",
-        "similarity": 0.55,
-    },
-]
+print("[startup] Loading papers.parquet …")
+PAPERS = pd.read_parquet(os.path.join(DATA_DIR, "papers.parquet"))
+print(f"[startup] Loaded {len(PAPERS):,} papers")
 
-# Edges between papers (pairs of paper indices with weights)
-MOCK_EDGES = [
-    (0, 1, 0.85), (0, 2, 0.60), (0, 5, 0.78),
-    (1, 5, 0.90), (1, 7, 0.72), (1, 8, 0.80),
-    (2, 3, 0.88), (2, 11, 0.55),
-    (3, 4, 0.82), (3, 11, 0.65),
-    (4, 6, 0.70), (4, 3, 0.75),
-    (5, 7, 0.83), (5, 8, 0.86),
-    (6, 9, 0.50), (6, 4, 0.60),
-    (7, 8, 0.92), (7, 1, 0.70),
-    (9, 6, 0.45), (9, 10, 0.40),
-    (10, 11, 0.48), (10, 2, 0.42),
-    (11, 3, 0.58),
-]
+print("[startup] Memory-mapping embeddings …")
+VECTORS = np.load(
+    os.path.join(DATA_DIR, "embeddings-001.npy"), mmap_mode="r"
+)
+print(f"[startup] Embeddings shape: {VECTORS.shape}, dtype: {VECTORS.dtype}")
+
+assert len(PAPERS) == len(VECTORS), "papers and embeddings must have the same number of rows"
+
+# Build a paper_id → row index lookup for fast search-by-id
+PAPER_ID_TO_IDX = pd.Series(PAPERS.index, index=PAPERS["paper_id"]).to_dict()
+
+# Pre-compute float32 chunks for fast dot products (avoids repeated conversion)
+NUM_CHUNKS = 20
+CHUNK_BOUNDARIES = np.array_split(np.arange(len(VECTORS)), NUM_CHUNKS)
+
+# ---------------------------------------------------------------------------
+# Metadata Cache DB (SQLite)
+# ---------------------------------------------------------------------------
+def _init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS paper_metadata (
+            paper_id TEXT PRIMARY KEY,
+            title TEXT,
+            year INTEGER,
+            arxiv_id TEXT,
+            url TEXT,
+            venue TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+_init_db()
 
 
-def _compute_novelty(year_cutoff: int) -> dict:
+def _get_cached_metadata(paper_ids: list[str]) -> dict:
+    """Retrieve metadata from SQLite cache for requested paper_ids."""
+    if not paper_ids:
+        return {}
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    placeholders = ",".join("?" for _ in paper_ids)
+    c.execute(
+        f"SELECT paper_id, year, arxiv_id, url, venue FROM paper_metadata WHERE paper_id IN ({placeholders})",
+        [str(pid) for pid in paper_ids],
+    )
+    rows = c.fetchall()
+    conn.close()
+    return {
+        r[0]: {"year": r[1], "arxiv_id": r[2], "url": r[3], "venue": r[4]}
+        for r in rows
+    }
+
+
+def _save_cached_metadata_batch(records: list[tuple]):
+    """Save resolved metadata into SQLite cache."""
+    if not records:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.executemany(
+        """
+        INSERT OR REPLACE INTO paper_metadata (paper_id, title, year, arxiv_id, url, venue)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        records,
+    )
+    conn.commit()
+    conn.close()
+
+
+def _scrape_single_paper_metadata(item: tuple[str, str]) -> tuple[str, dict]:
     """
-    Mock novelty computation.
-    Returns novelty score (0-100) and a TLDR of what makes it novel.
-    Will be replaced by real embedding-based computation later.
+    Scrape publication year and URL for a paper via arXiv API with Crossref fallback.
+    Returns (paper_id, {year, url, arxiv_id, venue}).
     """
-    # Filter papers by year cutoff
-    filtered = [p for p in MOCK_PAPERS if p["year"] >= year_cutoff]
-    if not filtered:
-        filtered = MOCK_PAPERS[:3]
+    pid, title = item
+    clean = re.sub(r"[^\w\s]", " ", title).strip()
+    clean = re.sub(r"\s+", " ", clean)
 
-    # Mock novelty score — randomised but deterministic per cutoff
-    random.seed(year_cutoff * 42)
-    score = random.randint(35, 85)
+    # 1. Try arXiv API with title search
+    try:
+        q = urllib.parse.quote(clean[:75])
+        url = f'https://export.arxiv.org/api/query?search_query=ti:"{q}"&max_results=2'
+        req = urllib.request.Request(url, headers={"User-Agent": "EurekaCheck/1.0"})
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            content = resp.read().decode("utf-8")
+            entries = content.split("<entry>")
+            for e in entries[1:]:
+                p_m = re.search(r"<published>(\d{4})", e)
+                id_m = re.search(r"<id>(http://arxiv.org/abs/([^<]+))</id>", e)
+                if p_m:
+                    year = int(p_m.group(1))
+                    arxiv_url = id_m.group(1) if id_m else f"https://arxiv.org/abs/{id_m.group(2)}" if id_m else ""
+                    arxiv_id = id_m.group(2) if id_m else ""
+                    return pid, {"year": year, "arxiv_id": arxiv_id, "url": arxiv_url, "venue": "arXiv"}
+    except Exception:
+        pass
 
-    if score >= 70:
+    # 2. Fallback to Crossref
+    try:
+        q = urllib.parse.quote(clean[:80])
+        url = f"https://api.crossref.org/works?query.bibliographic={q}&rows=1"
+        req = urllib.request.Request(url, headers={"User-Agent": "EurekaCheck/1.0 (mailto:ai4research@hackathon.org)"})
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            data = json.loads(resp.read().decode())
+            items = data.get("message", {}).get("items", [])
+            if items:
+                item_data = items[0]
+                d_parts = item_data.get("published-print", item_data.get("published-online", item_data.get("created", {}))).get("date-parts", [[None]])
+                year = d_parts[0][0]
+                doi_url = item_data.get("URL", "")
+                venue = item_data.get("container-title", [""])[0] if item_data.get("container-title") else "Publication"
+                if year and 1950 <= int(year) <= 2026:
+                    return pid, {"year": int(year), "arxiv_id": "", "url": doi_url, "venue": venue}
+    except Exception:
+        pass
+
+    # 3. Year regex fallback from title if present
+    yr_match = re.search(r"\b(19\d\d|20[0-2]\d)\b", title)
+    if yr_match:
+        yr = int(yr_match.group(1))
+        return pid, {"year": yr, "arxiv_id": "", "url": "", "venue": ""}
+
+    return pid, {"year": None, "arxiv_id": "", "url": "", "venue": ""}
+
+
+def _resolve_papers_metadata(papers_list: list[dict]) -> dict[str, dict]:
+    """
+    Resolve publication metadata (year, URL, venue) for a list of papers.
+    Uses SQLite cache first, then scrapes missing items in parallel.
+    """
+    pids = [p["id"] for p in papers_list]
+    cached = _get_cached_metadata(pids)
+
+    missing = [p for p in papers_list if p["id"] not in cached or cached[p["id"]]["year"] is None]
+
+    if missing:
+        to_scrape = [(p["id"], p["title"]) for p in missing]
+        records_to_save = []
+        with ThreadPoolExecutor(max_workers=min(8, len(to_scrape))) as executor:
+            scraped = list(executor.map(_scrape_single_paper_metadata, to_scrape))
+
+        for pid, meta in scraped:
+            cached[pid] = meta
+            # Find title
+            title = next((p["title"] for p in missing if p["id"] == pid), "")
+            if meta["year"] is not None:
+                records_to_save.append((pid, title, meta["year"], meta["arxiv_id"], meta["url"], meta["venue"]))
+
+        if records_to_save:
+            _save_cached_metadata_batch(records_to_save)
+
+    return cached
+
+
+# ---------------------------------------------------------------------------
+# Cosine Similarity Search
+# ---------------------------------------------------------------------------
+def _cosine_topk(query_vec: np.ndarray, k: int = 25, exclude_idx: int = -1) -> list[tuple[int, float]]:
+    """
+    Find the top-k most similar papers to `query_vec` using dot product
+    (vectors are L2-normalised, so dot product = cosine similarity).
+    Returns list of (row_index, similarity_score).
+    """
+    query = np.asarray(query_vec, dtype=np.float32)
+
+    scores = np.concatenate([
+        np.asarray(VECTORS[chunk], dtype=np.float32) @ query
+        for chunk in CHUNK_BOUNDARIES
+    ])
+
+    if exclude_idx >= 0:
+        scores[exclude_idx] = -np.inf
+
+    top_indices = np.argpartition(scores, -k)[-k:]
+    top_indices = top_indices[np.argsort(-scores[top_indices])]
+
+    return [(int(idx), float(scores[idx])) for idx in top_indices]
+
+
+def _paper_row_to_dict(idx: int, similarity: float = 0.0) -> dict:
+    """Convert a DataFrame row to a JSON-friendly dict."""
+    row = PAPERS.iloc[idx]
+    return {
+        "id": str(row["paper_id"]),
+        "title": str(row["title"]) if pd.notna(row["title"]) else "Untitled",
+        "authors": str(row["authors"]) if pd.notna(row["authors"]) else "Unknown",
+        "arxiv_category": str(row["arxiv_category"]) if pd.notna(row["arxiv_category"]) else "",
+        "similarity": round(similarity, 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Field Calibration & Cutoff-Aware Novelty Scoring
+# ---------------------------------------------------------------------------
+FIELD_CALIBRATION = {
+    # Computer Science
+    "cs.CL": {"bounds": (0.66, 0.93), "name": "Computation & Language (cs.CL)"},
+    "cs.CV": {"bounds": (0.65, 0.92), "name": "Computer Vision (cs.CV)"},
+    "cs.LG": {"bounds": (0.64, 0.91), "name": "Machine Learning (cs.LG)"},
+    "cs.AI": {"bounds": (0.62, 0.90), "name": "Artificial Intelligence (cs.AI)"},
+    "cs.RO": {"bounds": (0.56, 0.87), "name": "Robotics (cs.RO)"},
+    "cs.CR": {"bounds": (0.54, 0.85), "name": "Cryptography & Security (cs.CR)"},
+    "cs.NE": {"bounds": (0.56, 0.87), "name": "Neural & Evolutionary (cs.NE)"},
+    "cs.IR": {"bounds": (0.58, 0.88), "name": "Information Retrieval (cs.IR)"},
+    "cs": {"bounds": (0.58, 0.89), "name": "Computer Science (General)"},
+
+    # Mathematics
+    "math.PR": {"bounds": (0.44, 0.78), "name": "Probability (math.PR)"},
+    "math.AP": {"bounds": (0.44, 0.78), "name": "Analysis of PDEs (math.AP)"},
+    "math.CO": {"bounds": (0.42, 0.76), "name": "Combinatorics (math.CO)"},
+    "math.AG": {"bounds": (0.42, 0.76), "name": "Algebraic Geometry (math.AG)"},
+    "math": {"bounds": (0.44, 0.78), "name": "Mathematics (General)"},
+
+    # Physics & Astronomy
+    "hep-ph": {"bounds": (0.48, 0.84), "name": "High Energy Physics - Phenomenology (hep-ph)"},
+    "hep-th": {"bounds": (0.48, 0.84), "name": "High Energy Physics - Theory (hep-th)"},
+    "hep": {"bounds": (0.48, 0.84), "name": "High Energy Physics"},
+    "quant-ph": {"bounds": (0.50, 0.84), "name": "Quantum Physics (quant-ph)"},
+    "gr-qc": {"bounds": (0.46, 0.80), "name": "General Relativity & Quantum Cosmology (gr-qc)"},
+    "cond-mat": {"bounds": (0.48, 0.83), "name": "Condensed Matter"},
+    "astro-ph": {"bounds": (0.48, 0.83), "name": "Astrophysics"},
+    "physics": {"bounds": (0.46, 0.82), "name": "Physics (General)"},
+
+    # Statistics & Electrical Eng & Bio & Finance
+    "stat.ML": {"bounds": (0.62, 0.90), "name": "Statistical Machine Learning (stat.ML)"},
+    "stat": {"bounds": (0.50, 0.84), "name": "Statistics (General)"},
+    "eess": {"bounds": (0.50, 0.82), "name": "Electrical Eng & Systems Science (eess)"},
+    "q-bio": {"bounds": (0.48, 0.82), "name": "Quantitative Biology (q-bio)"},
+    "q-fin": {"bounds": (0.48, 0.80), "name": "Quantitative Finance (q-fin)"},
+    "default": {"bounds": (0.50, 0.88), "name": "General Literature"},
+}
+
+
+def _get_field_info(category: str | None) -> tuple[tuple[float, float], str]:
+    if not category or pd.isna(category) or category == "<NA>" or category == "":
+        return FIELD_CALIBRATION["default"]["bounds"], FIELD_CALIBRATION["default"]["name"]
+
+    cat_str = str(category).strip()
+    if cat_str in FIELD_CALIBRATION:
+        return FIELD_CALIBRATION[cat_str]["bounds"], FIELD_CALIBRATION[cat_str]["name"]
+
+    prefix = cat_str.split(".")[0] if "." in cat_str else cat_str.split("-")[0]
+    if prefix in FIELD_CALIBRATION:
+        return FIELD_CALIBRATION[prefix]["bounds"], f"{FIELD_CALIBRATION[prefix]['name']} ({cat_str})"
+
+    return FIELD_CALIBRATION["default"]["bounds"], f"Field: {cat_str}"
+
+
+def _compute_novelty(
+    similarities: list[float],
+    category: str | None = None,
+    year_cutoff: int | None = None,
+    prior_art_count: int = 0,
+    total_count: int = 0,
+) -> dict:
+    """
+    Compute a field-calibrated and cutoff-aware novelty score (0.0 to 1.0 / 0-100%).
+    """
+    (s_min, s_max), field_name = _get_field_info(category)
+
+    if not similarities:
+        # If no prior art exists prior to cutoff, it is highly novel
+        if year_cutoff and prior_art_count == 0 and total_count > 0:
+            return {
+                "score": 95,
+                "score_norm": 0.95,
+                "level": "high",
+                "field": field_name,
+                "top_similarity": 0.0,
+                "year_cutoff": year_cutoff,
+                "prior_art_count": 0,
+                "tldr": f"Exceptional historical novelty (0.95 / 1.00) relative to literature published on or before {year_cutoff}. None of the {total_count} related papers existed at this cutoff point, indicating this work was groundbreaking prior art.",
+            }
+        return {
+            "score": 50,
+            "score_norm": 0.50,
+            "level": "medium",
+            "field": field_name,
+            "top_similarity": 0.5,
+            "year_cutoff": year_cutoff,
+            "prior_art_count": prior_art_count,
+            "tldr": "Not enough data to assess novelty.",
+        }
+
+    top_sim = float(np.mean(similarities[:min(3, len(similarities))]))
+
+    raw_norm = (s_max - top_sim) / (s_max - s_min)
+    score_norm = float(np.clip(raw_norm, 0.0, 1.0))
+    score = int(round(score_norm * 100))
+
+    cutoff_str = f" relative to literature up to {year_cutoff}" if year_cutoff else ""
+
+    if score >= 65:
         level = "high"
         tldr = (
-            "This paper introduces a substantially novel approach that has limited "
-            "overlap with existing literature. The core contribution — combining "
-            "sparse mixture-of-experts with instruction tuning — has not been "
-            "explored in prior work within the selected time window. Key differentiators "
-            "include a new training paradigm and evaluation framework."
+            f"High novelty ({score_norm:.2f} / 1.00){cutoff_str} in {field_name}. "
+            f"Its nearest prior-art similarity of {top_sim:.2f} is well below the domain's "
+            f"crowded threshold ({s_max:.2f}), suggesting this contribution occupied an unpopulated "
+            f"region of the literature at this cutoff."
         )
-    elif score >= 40:
+    elif score >= 35:
         level = "medium"
         tldr = (
-            "This paper presents an incremental but meaningful contribution. While "
-            "the underlying techniques (transformer architectures, RLHF) are well-"
-            "established, the specific combination and application context show "
-            "moderate novelty. Several closely related works exist but address "
-            "slightly different problem formulations."
+            f"Moderate novelty ({score_norm:.2f} / 1.00){cutoff_str} within {field_name}. "
+            f"The nearest prior art has an average similarity of {top_sim:.2f}. While there is "
+            f"thematic overlap with earlier methods, it demonstrates meaningful divergence "
+            f"from pre-existing work."
         )
     else:
         level = "low"
         tldr = (
-            "This paper closely mirrors existing approaches in the literature. "
-            "Multiple highly similar works have been published within the selected "
-            "time window, covering the same methods and evaluation setup. Consider "
-            "differentiating the contribution further."
+            f"Low novelty ({score_norm:.2f} / 1.00){cutoff_str} in {field_name}. "
+            f"The closest prior art has a high average similarity of {top_sim:.2f} (near the "
+            f"field ceiling of {s_max:.2f}). Several pre-existing works covered closely related "
+            f"techniques or problem formulations."
         )
 
     return {
         "score": score,
+        "score_norm": round(score_norm, 3),
         "level": level,
+        "field": field_name,
+        "top_similarity": round(top_sim, 3),
+        "year_cutoff": year_cutoff,
+        "prior_art_count": prior_art_count,
         "tldr": tldr,
-        "papers": filtered,
     }
 
 
@@ -227,113 +371,139 @@ def index():
 @app.route("/api/search")
 def search_papers():
     """
-    Search existing papers by title or author keywords.
-    Returns up to 8 matching results for the autocomplete dropdown.
+    Search papers by title keyword (case-insensitive substring match).
+    Returns up to 10 matching results for the autocomplete dropdown.
     """
     q = request.args.get("q", "").strip().lower()
     if len(q) < 2:
         return jsonify([])
 
+    mask = PAPERS["title"].str.lower().str.contains(q, na=False)
+    matches = PAPERS[mask].head(10)
+
     results = []
-    for p in MOCK_PAPERS:
-        title_match = q in p["title"].lower()
-        author_match = any(q in a.lower() for a in p["authors"])
-        id_match = q in p["id"]
-        if title_match or author_match or id_match:
-            results.append({
-                "id": p["id"],
-                "title": p["title"],
-                "authors": p["authors"],
-                "year": p["year"],
-                "venue": p["venue"],
-            })
-    return jsonify(results[:8])
+    pids = [str(r["paper_id"]) for _, r in matches.iterrows()]
+    cached = _get_cached_metadata(pids)
+
+    for idx, row in matches.iterrows():
+        pid = str(row["paper_id"])
+        meta = cached.get(pid, {})
+        results.append({
+            "id": pid,
+            "title": str(row["title"]) if pd.notna(row["title"]) else "Untitled",
+            "authors": str(row["authors"]) if pd.notna(row["authors"]) else "Unknown",
+            "arxiv_category": str(row["arxiv_category"]) if pd.notna(row["arxiv_category"]) else "",
+            "year": meta.get("year"),
+            "row_idx": int(idx),
+        })
+    return jsonify(results)
 
 
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
     """
-    Accepts a PDF upload + year cutoff.
-    Returns mock similar papers, novelty score, and graph data.
+    Accepts a paper_id (from search) or PDF upload + year_cutoff.
+    Enriches papers with publication years, applies date cutoff, and returns
+    field-calibrated novelty score & similarity graph.
     """
-    year_cutoff = int(request.form.get("year_cutoff", 2018))
+    paper_id_str = request.form.get("paper_id")
+    row_idx_str = request.form.get("row_idx")
+    year_cutoff_str = request.form.get("year_cutoff")
+    year_cutoff = int(year_cutoff_str) if year_cutoff_str and year_cutoff_str != "all" else None
+    k = int(request.form.get("k", 18))
 
-    # In the future we'd extract text from the PDF, embed it, and search.
-    # For now we return mock data.
-    result = _compute_novelty(year_cutoff)
+    query_idx = None
+    if row_idx_str is not None:
+        query_idx = int(row_idx_str)
+    elif paper_id_str is not None:
+        pid = int(paper_id_str)
+        if pid in PAPER_ID_TO_IDX:
+            query_idx = PAPER_ID_TO_IDX[pid]
 
-    # Build graph data for the frontend
-    filtered_ids = {p["id"] for p in result["papers"]}
-    id_to_idx = {p["id"]: i for i, p in enumerate(MOCK_PAPERS)}
+    if query_idx is None:
+        return jsonify({"error": "No valid paper selected. PDF embedding is not yet supported."}), 400
 
-    nodes = []
-    for p in result["papers"]:
-        nodes.append({
-            "id": p["id"],
-            "title": p["title"],
-            "authors": p["authors"],
-            "year": p["year"],
-            "venue": p["venue"],
-            "citations": p["citations"],
-            "abstract": p["abstract"],
-            "url": p["url"],
-            "similarity": p["similarity"],
-        })
+    query_vec = VECTORS[query_idx]
+    center_meta = _paper_row_to_dict(query_idx, similarity=1.0)
 
-    # Determine center node metadata
-    paper_id = request.form.get("paper_id")
-    center_paper = None
-    if paper_id:
-        center_paper = next((p for p in MOCK_PAPERS if p["id"] == paper_id), None)
+    # Find top candidate similar papers
+    top_results = _cosine_topk(query_vec, k=k, exclude_idx=query_idx)
+    similar_papers = [_paper_row_to_dict(idx, sim) for idx, sim in top_results]
 
-    # Add the origin paper as the center node
-    if center_paper:
-        nodes.insert(0, {
-            "id": "uploaded",
-            "title": center_paper["title"],
-            "authors": center_paper["authors"],
-            "year": center_paper["year"],
-            "venue": center_paper["venue"],
-            "citations": center_paper["citations"],
-            "abstract": center_paper["abstract"],
-            "url": center_paper["url"],
-            "similarity": 1.0,
-        })
+    # Resolve publication metadata (dates, URLs, venues) for center and candidate papers
+    all_to_resolve = [center_meta] + similar_papers
+    metadata_map = _resolve_papers_metadata(all_to_resolve)
+
+    # Enrich center paper with resolved metadata
+    c_meta = metadata_map.get(center_meta["id"], {})
+    center_meta["year"] = c_meta.get("year")
+    center_meta["url"] = c_meta.get("url") or f"https://scholar.google.com/scholar?q={urllib.parse.quote(center_meta['title'])}"
+    center_meta["venue"] = c_meta.get("venue") or center_meta.get("arxiv_category")
+
+    # Enrich similar papers with resolved metadata and prior_art flags
+    for p in similar_papers:
+        meta = metadata_map.get(p["id"], {})
+        p["year"] = meta.get("year")
+        p["url"] = meta.get("url") or f"https://scholar.google.com/scholar?q={urllib.parse.quote(p['title'])}"
+        p["venue"] = meta.get("venue") or p.get("arxiv_category")
+
+        # Classify relation to year cutoff
+        if year_cutoff is not None and p["year"] is not None:
+            p["is_prior_art"] = p["year"] <= year_cutoff
+            p["status"] = "prior" if p["year"] <= year_cutoff else "subsequent"
+        else:
+            p["is_prior_art"] = True
+            p["status"] = "all"
+
+    # Compute novelty score evaluated specifically against PRIOR ART (<= cutoff)
+    if year_cutoff is not None:
+        prior_art_sims = [p["similarity"] for p in similar_papers if p.get("is_prior_art")]
     else:
-        nodes.insert(0, {
-            "id": "uploaded",
-            "title": "Your Paper",
-            "authors": ["You"],
-            "year": 2024,
-            "venue": "Uploaded",
-            "citations": 0,
-            "abstract": "The paper you uploaded for analysis.",
-            "url": None,
-            "similarity": 1.0,
-        })
+        prior_art_sims = [p["similarity"] for p in similar_papers]
 
+    novelty = _compute_novelty(
+        prior_art_sims,
+        category=center_meta.get("arxiv_category"),
+        year_cutoff=year_cutoff,
+        prior_art_count=len(prior_art_sims),
+        total_count=len(similar_papers),
+    )
+
+    # Build graph nodes
+    nodes = [
+        {**center_meta, "id": "uploaded", "is_center": True, "status": "center"},
+    ]
+    for p in similar_papers:
+        nodes.append({**p, "is_center": False})
+
+    # Build graph edges
     edges = []
-    # Connect uploaded paper to all similar papers
-    for p in result["papers"]:
+    for p in similar_papers:
         edges.append({
             "source": "uploaded",
             "target": p["id"],
             "weight": p["similarity"],
         })
-    # Connect similar papers to each other
-    for i, j, w in MOCK_EDGES:
-        if i < len(MOCK_PAPERS) and j < len(MOCK_PAPERS):
-            src = MOCK_PAPERS[i]["id"]
-            tgt = MOCK_PAPERS[j]["id"]
-            if src in filtered_ids and tgt in filtered_ids:
-                edges.append({"source": src, "target": tgt, "weight": w})
+
+    # Pairwise similarities among retrieved papers
+    top_indices = [idx for idx, _ in top_results]
+    if len(top_indices) > 1:
+        top_vecs = np.asarray(VECTORS[top_indices], dtype=np.float32)
+        sim_matrix = top_vecs @ top_vecs.T
+
+        threshold = 0.52
+        for i in range(len(top_indices)):
+            for j in range(i + 1, len(top_indices)):
+                sim = float(sim_matrix[i, j])
+                if sim > threshold:
+                    edges.append({
+                        "source": similar_papers[i]["id"],
+                        "target": similar_papers[j]["id"],
+                        "weight": sim,
+                    })
 
     return jsonify({
-        "novelty": {
-            "score": result["score"],
-            "level": result["level"],
-            "tldr": result["tldr"],
-        },
+        "novelty": novelty,
         "graph": {
             "nodes": nodes,
             "edges": edges,
@@ -342,4 +512,4 @@ def analyze():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)
+    app.run(debug=True, port=5001, use_reloader=False)

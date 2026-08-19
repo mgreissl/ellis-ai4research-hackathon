@@ -34,11 +34,10 @@
     const detailClose = document.getElementById("detail-close");
     const detailTitle = document.getElementById("detail-title");
     const detailAuthors = document.getElementById("detail-authors");
-    const detailVenue = document.getElementById("detail-venue");
     const detailYear = document.getElementById("detail-year");
-    const detailCite = document.getElementById("detail-citations");
+    const detailCategory = document.getElementById("detail-category");
+    const detailStatusBadge = document.getElementById("detail-status-badge");
     const detailSim = document.getElementById("detail-similarity");
-    const detailAbstract = document.getElementById("detail-abstract");
     const detailLink = document.getElementById("detail-link");
 
     const graphContainer = document.getElementById("graph-container");
@@ -142,7 +141,7 @@
         searchResults.innerHTML = papers.map((p) => `
             <div class="search-result-item" data-id="${p.id}">
                 <div class="sr-title">${esc(p.title)}</div>
-                <div class="sr-meta">${esc(p.authors[0])} et al. · ${p.year} · ${p.venue}</div>
+                <div class="sr-meta">${esc(p.authors)}${p.arxiv_category ? ' · ' + esc(p.arxiv_category) : ''}</div>
             </div>
         `).join("");
 
@@ -192,7 +191,10 @@
 
         const form = new FormData();
         if (selectedFile) form.append("file", selectedFile);
-        if (selectedPaper) form.append("paper_id", selectedPaper.id);
+        if (selectedPaper) {
+            form.append("paper_id", selectedPaper.id);
+            if (selectedPaper.row_idx !== undefined) form.append("row_idx", selectedPaper.row_idx);
+        }
         form.append("year_cutoff", yearCutoff.value);
 
         try {
@@ -213,7 +215,11 @@
     yearInline.addEventListener("change", async () => {
         yearCutoff.value = yearInline.value;
         const form = new FormData();
-        form.append("file", selectedFile || new Blob());
+        if (selectedFile) form.append("file", selectedFile);
+        if (selectedPaper) {
+            form.append("paper_id", selectedPaper.id);
+            if (selectedPaper.row_idx !== undefined) form.append("row_idx", selectedPaper.row_idx);
+        }
         form.append("year_cutoff", yearInline.value);
         try {
             const res = await fetch("/api/analyze", { method: "POST", body: form });
@@ -246,11 +252,16 @@
 
     // ─── Novelty Indicators ───
     function renderNovelty(novelty) {
-        const { score, level, tldr } = novelty;
+        const { score, score_norm, level, field, tldr } = novelty;
 
-        // Score text
+        // Score text (show 0-100 or normalized)
         noveltyScoreEl.textContent = score;
         detailScoreValue.textContent = score;
+
+        const fieldBadge = document.getElementById("detail-field-badge");
+        if (fieldBadge && field) {
+            fieldBadge.textContent = `Calibrated: ${field}`;
+        }
 
         // Score ring
         const circumference = 2 * Math.PI * 52; // r=52
@@ -283,11 +294,19 @@
         papers.forEach((p) => {
             const el = document.createElement("div");
             el.className = "paper-item";
+            const authorsShort = (p.authors || "Unknown").split(",")[0].trim();
+            const yearStr = p.year ? `<span>${p.year}</span>` : '';
+            const statusBadge = p.status === 'prior'
+                ? `<span class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; font-size:10px;">Prior Art</span>`
+                : (p.status === 'subsequent' ? `<span class="badge" style="background:rgba(34,211,238,0.2); color:#67e8f9; font-size:10px;">Subsequent</span>` : '');
+
             el.innerHTML = `
                 <div class="pi-title">${esc(p.title)}</div>
                 <div class="pi-meta">
-                    <span>${esc(p.authors[0])} et al.</span>
-                    <span>${p.year}</span>
+                    <span>${esc(authorsShort)} et al.</span>
+                    ${yearStr}
+                    ${p.arxiv_category ? `<span>${esc(p.arxiv_category)}</span>` : ''}
+                    ${statusBadge}
                     <span class="pi-similarity">${(p.similarity * 100).toFixed(0)}%</span>
                 </div>
             `;
@@ -314,17 +333,39 @@
         detailPaper.classList.remove("hidden");
 
         detailTitle.textContent = paper.title;
-        detailAuthors.textContent = paper.authors.join(", ");
-        detailVenue.textContent = paper.venue;
-        detailYear.textContent = paper.year;
-        detailCite.textContent = paper.citations.toLocaleString();
-        detailSim.textContent = (paper.similarity * 100).toFixed(0) + "%";
-        detailAbstract.textContent = paper.abstract;
+        detailAuthors.textContent = paper.authors || "Unknown";
+        if (detailYear) {
+            detailYear.textContent = paper.year ? `Published: ${paper.year}` : (paper.is_center ? "Query Paper" : "");
+        }
+        if (detailCategory) {
+            detailCategory.textContent = paper.arxiv_category ? `arXiv: ${paper.arxiv_category}` : (paper.venue || "General");
+        }
+        if (detailStatusBadge) {
+            if (paper.status === 'prior') {
+                detailStatusBadge.textContent = "Prior Art (≤ Cutoff)";
+                detailStatusBadge.style.display = "inline-block";
+                detailStatusBadge.style.background = "rgba(99,102,241,0.25)";
+                detailStatusBadge.style.color = "#a5b4fc";
+            } else if (paper.status === 'subsequent') {
+                detailStatusBadge.textContent = "Subsequent (> Cutoff)";
+                detailStatusBadge.style.display = "inline-block";
+                detailStatusBadge.style.background = "rgba(34,211,238,0.2)";
+                detailStatusBadge.style.color = "#67e8f9";
+            } else {
+                detailStatusBadge.style.display = "none";
+            }
+        }
+        detailSim.textContent = (paper.similarity * 100).toFixed(1) + "%";
+
         if (paper.url) {
             detailLink.href = paper.url;
             detailLink.classList.remove("hidden");
+            detailLink.textContent = paper.url.includes("arxiv.org") ? "Open on arXiv →" : "Open Paper Source →";
         } else {
-            detailLink.classList.add("hidden");
+            const searchQuery = encodeURIComponent(paper.title);
+            detailLink.href = `https://scholar.google.com/scholar?q=${searchQuery}`;
+            detailLink.classList.remove("hidden");
+            detailLink.textContent = "Search on Google Scholar →";
         }
     }
 
@@ -348,15 +389,15 @@
 
         svg.attr("viewBox", `0 0 ${width} ${height}`);
 
-        // Colour scale by year
-        const years = graphData.nodes.map((n) => n.year);
-        const yearScale = d3.scaleLinear()
-            .domain([d3.min(years), d3.max(years)])
-            .range(["#6366f1", "#22d3ee"]);
+        // Colour scale by similarity (higher = more vivid)
+        const simScale = d3.scaleLinear()
+            .domain([0.3, 1.0])
+            .range(["#6366f1", "#22d3ee"])
+            .clamp(true);
 
-        // Size scale by citations (sqrt)
-        const citeExtent = d3.extent(graphData.nodes.filter(n => n.id !== "uploaded"), (n) => n.citations);
-        const sizeScale = d3.scaleSqrt().domain([0, citeExtent[1] || 1]).range([8, 36]);
+        // Size scale by similarity (more similar = bigger)
+        const simExtent = d3.extent(graphData.nodes.filter(n => n.id !== "uploaded"), (n) => n.similarity);
+        const sizeScale = d3.scaleSqrt().domain([simExtent[0] || 0.3, simExtent[1] || 1]).range([8, 28]);
 
         // Clone data
         const nodes = graphData.nodes.map((d) => ({ ...d }));
@@ -393,8 +434,13 @@
         // Node circles
         node.append("circle")
             .attr("r", (d) => getRadius(d))
-            .attr("fill", (d) => d.id === "uploaded" ? "#f97316" : yearScale(d.year))
-            .attr("stroke", (d) => d.id === "uploaded" ? "#fbbf24" : "rgba(255,255,255,0.12)")
+            .attr("fill", (d) => {
+                if (d.id === "uploaded") return "#f97316";
+                if (d.status === "prior") return "#6366f1";
+                if (d.status === "subsequent") return "#22d3ee";
+                return simScale(d.similarity || 0.5);
+            })
+            .attr("stroke", (d) => d.id === "uploaded" ? "#fbbf24" : (d.status === "prior" ? "#818cf8" : "rgba(255,255,255,0.12)"))
             .attr("stroke-width", (d) => d.id === "uploaded" ? 3 : 1.5)
             .attr("opacity", 0.9);
 
@@ -405,7 +451,8 @@
                     const label = d.title.length > 28 ? d.title.slice(0, 25) + "…" : d.title;
                     return `📌 ${label}`;
                 }
-                return `${d.authors[0].split(" ").pop()}, ${d.year}`;
+                const lastName = (d.authors || "Unknown").split(",")[0].trim().split(" ").pop();
+                return d.year ? `${lastName}, ${d.year}` : `${lastName}`;
             })
             .attr("dy", (d) => getRadius(d) + 14)
             .attr("text-anchor", "middle")
@@ -418,9 +465,11 @@
         node.on("mouseover", (event, d) => {
             if (d.id === "uploaded") return;
             graphTooltip.classList.remove("hidden");
+            const statusLabel = d.status === 'prior' ? ' · Prior Art' : (d.status === 'subsequent' ? ' · Subsequent' : '');
+            const yrLabel = d.year ? ` · ${d.year}` : '';
             graphTooltip.innerHTML = `
                 <div class="tt-title">${esc(d.title)}</div>
-                <div class="tt-meta">${esc(d.authors[0])} et al. · ${d.year} · ${d.citations} cit. · ${(d.similarity * 100).toFixed(0)}% sim</div>
+                <div class="tt-meta">${esc(d.authors || 'Unknown')}${yrLabel}${d.arxiv_category ? ' · ' + esc(d.arxiv_category) : ''} · ${(d.similarity * 100).toFixed(0)}% sim${statusLabel}</div>
             `;
             const [x, y] = d3.pointer(event, graphContainer);
             graphTooltip.style.left = (x + 16) + "px";
@@ -447,7 +496,7 @@
 
         function getRadius(d) {
             if (d.id === "uploaded") return 22;
-            return sizeScale(d.citations);
+            return sizeScale(d.similarity || 0.5);
         }
 
         function dragStart(event) {

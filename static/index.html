@@ -69,17 +69,18 @@
                     <label for="year-cutoff">Year cutoff</label>
                     <div class="year-select-wrapper">
                         <select id="year-cutoff">
-                            <option value="2015">2015</option>
-                            <option value="2016">2016</option>
-                            <option value="2017" selected>2017</option>
-                            <option value="2018">2018</option>
-                            <option value="2019">2019</option>
-                            <option value="2020">2020</option>
-                            <option value="2021">2021</option>
-                            <option value="2022">2022</option>
-                            <option value="2023">2023</option>
-                            <option value="2024">2024</option>
-                            <option value="2025">2025</option>
+                            <option value="all">All years (No cutoff)</option>
+                            <option value="2015">≤ 2015</option>
+                            <option value="2016">≤ 2016</option>
+                            <option value="2017">≤ 2017</option>
+                            <option value="2018" selected>≤ 2018</option>
+                            <option value="2019">≤ 2019</option>
+                            <option value="2020">≤ 2020</option>
+                            <option value="2021">≤ 2021</option>
+                            <option value="2022">≤ 2022</option>
+                            <option value="2023">≤ 2023</option>
+                            <option value="2024">≤ 2024</option>
+                            <option value="2025">≤ 2025</option>
                         </select>
                     </div>
                 </div>
@@ -123,7 +124,7 @@
                     </div>
                 </div>
                 <div class="toolbar-right">
-                    <label for="year-cutoff-inline" class="inline-label">Cutoff</label>
+                    <label for="year-cutoff-inline" class="inline-label">Year Cutoff</label>
                     <select id="year-cutoff-inline" class="select-sm"></select>
                 </div>
             </div>
@@ -132,9 +133,10 @@
                 <div id="graph-tooltip" class="hidden"></div>
             </div>
             <div id="graph-legend">
-                <span class="legend-item"><span class="legend-dot" style="background:var(--year-old)"></span>Older</span>
-                <span class="legend-item"><span class="legend-dot" style="background:var(--year-new)"></span>Newer</span>
-                <span class="legend-item"><span class="legend-sizer"></span> = Citations</span>
+                <span class="legend-item"><span class="legend-dot" style="background:#f97316"></span>Origin Paper</span>
+                <span class="legend-item"><span class="legend-dot" style="background:#6366f1"></span>Prior Art (≤ Cutoff)</span>
+                <span class="legend-item"><span class="legend-dot" style="background:#22d3ee"></span>Subsequent (> Cutoff)</span>
+                <span class="legend-item"><span class="legend-sizer"></span> = High Similarity</span>
             </div>
         </section>
 
@@ -147,6 +149,7 @@
                     <div class="light yellow" data-level="medium"></div>
                     <div class="light green" data-level="high"></div>
                 </div>
+                <div id="detail-field-badge" class="badge" style="display:block; text-align:center; margin: 0 auto 16px; width: fit-content; max-width: 100%; font-size: 11px; background: rgba(99,102,241,0.15); color: var(--accent-light); border: 1px solid rgba(99,102,241,0.3);">Field: General</div>
                 <div id="detail-score-ring">
                     <svg viewBox="0 0 120 120">
                         <circle cx="60" cy="60" r="52" class="ring-bg"/>
@@ -161,20 +164,18 @@
                 <h3 id="detail-title"></h3>
                 <p class="detail-meta">
                     <span id="detail-authors"></span><br>
-                    <span id="detail-venue"></span> · <span id="detail-year"></span>
+                    <span id="detail-year" style="font-weight:600; color:var(--text); margin-top:4px; display:inline-block;"></span>
+                    <span id="detail-category" class="badge" style="margin-left:6px; display:inline-block;"></span>
+                    <span id="detail-status-badge" class="badge" style="margin-left:4px; display:inline-block;"></span>
                 </p>
                 <div class="detail-stats">
                     <div class="stat">
-                        <span class="stat-value" id="detail-citations">—</span>
-                        <span class="stat-label">Citations</span>
-                    </div>
-                    <div class="stat">
                         <span class="stat-value" id="detail-similarity">—</span>
-                        <span class="stat-label">Similarity</span>
+                        <span class="stat-label">Cosine Similarity</span>
                     </div>
                 </div>
                 <p id="detail-abstract" class="abstract-text"></p>
-                <a id="detail-link" class="btn-primary btn-sm" href="#" target="_blank" rel="noopener">Open on arXiv →</a>
+                <a id="detail-link" class="btn-primary btn-sm" href="#" target="_blank" rel="noopener">Open Paper / Source →</a>
             </div>
         </aside>
     </main>
