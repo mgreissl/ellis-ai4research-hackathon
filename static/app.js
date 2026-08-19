@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   NoveltyScope — Frontend Application
+   Eureka Check — Frontend Application
    ═══════════════════════════════════════════════════════════════ */
 
 (() => {
@@ -7,55 +7,55 @@
 
     // ── DOM refs ──
     const uploadOverlay = document.getElementById("upload-overlay");
-    const dropZone      = document.getElementById("drop-zone");
-    const fileInput     = document.getElementById("file-input");
-    const browseBtn     = document.getElementById("browse-btn");
-    const filePreview   = document.getElementById("file-preview");
-    const fileNameEl    = document.getElementById("file-name");
+    const dropZone = document.getElementById("drop-zone");
+    const fileInput = document.getElementById("file-input");
+    const browseBtn = document.getElementById("browse-btn");
+    const filePreview = document.getElementById("file-preview");
+    const fileNameEl = document.getElementById("file-name");
     const removeFileBtn = document.getElementById("remove-file");
-    const analyzeBtn    = document.getElementById("analyze-btn");
-    const yearCutoff    = document.getElementById("year-cutoff");
-    const yearInline    = document.getElementById("year-cutoff-inline");
+    const analyzeBtn = document.getElementById("analyze-btn");
+    const yearCutoff = document.getElementById("year-cutoff");
+    const yearInline = document.getElementById("year-cutoff-inline");
 
-    const resultsEl     = document.getElementById("results");
-    const paperList     = document.getElementById("paper-list");
-    const paperCount    = document.getElementById("paper-count");
-    const btnBack       = document.getElementById("btn-back");
+    const resultsEl = document.getElementById("results");
+    const paperList = document.getElementById("paper-list");
+    const paperCount = document.getElementById("paper-count");
+    const btnBack = document.getElementById("btn-back");
 
-    const trafficLights     = document.querySelectorAll("#traffic-light .light");
-    const trafficLightsLg   = document.querySelectorAll("#detail-traffic-light .light");
-    const noveltyScoreEl    = document.getElementById("novelty-score");
-    const detailScoreValue  = document.getElementById("detail-score-value");
-    const scoreRingFg       = document.getElementById("score-ring-fg");
-    const detailTldr        = document.getElementById("detail-tldr");
+    const trafficLights = document.querySelectorAll("#traffic-light .light");
+    const trafficLightsLg = document.querySelectorAll("#detail-traffic-light .light");
+    const noveltyScoreEl = document.getElementById("novelty-score");
+    const detailScoreValue = document.getElementById("detail-score-value");
+    const scoreRingFg = document.getElementById("score-ring-fg");
+    const detailTldr = document.getElementById("detail-tldr");
 
     const detailNovelty = document.getElementById("detail-novelty");
-    const detailPaper   = document.getElementById("detail-paper");
-    const detailClose   = document.getElementById("detail-close");
-    const detailTitle   = document.getElementById("detail-title");
+    const detailPaper = document.getElementById("detail-paper");
+    const detailClose = document.getElementById("detail-close");
+    const detailTitle = document.getElementById("detail-title");
     const detailAuthors = document.getElementById("detail-authors");
-    const detailVenue   = document.getElementById("detail-venue");
-    const detailYear    = document.getElementById("detail-year");
-    const detailCite    = document.getElementById("detail-citations");
-    const detailSim     = document.getElementById("detail-similarity");
-    const detailAbstract= document.getElementById("detail-abstract");
-    const detailLink    = document.getElementById("detail-link");
+    const detailVenue = document.getElementById("detail-venue");
+    const detailYear = document.getElementById("detail-year");
+    const detailCite = document.getElementById("detail-citations");
+    const detailSim = document.getElementById("detail-similarity");
+    const detailAbstract = document.getElementById("detail-abstract");
+    const detailLink = document.getElementById("detail-link");
 
     const graphContainer = document.getElementById("graph-container");
-    const graphTooltip   = document.getElementById("graph-tooltip");
+    const graphTooltip = document.getElementById("graph-tooltip");
 
-    let selectedFile   = null;
-    let selectedPaper  = null;
-    let currentData    = null;
-    let simulation     = null;
+    let selectedFile = null;
+    let selectedPaper = null;
+    let currentData = null;
+    let simulation = null;
 
     // ── Search DOM refs ──
-    const searchInput    = document.getElementById("search-input");
-    const searchResults  = document.getElementById("search-results");
-    const searchPreview  = document.getElementById("search-preview");
+    const searchInput = document.getElementById("search-input");
+    const searchResults = document.getElementById("search-results");
+    const searchPreview = document.getElementById("search-preview");
     const searchPaperName = document.getElementById("search-paper-name");
     const removeSearchBtn = document.getElementById("remove-search");
-    const searchSection   = document.getElementById("search-section");
+    const searchSection = document.getElementById("search-section");
 
     // ── Populate inline year selector ──
     for (const opt of yearCutoff.options) {
@@ -313,12 +313,12 @@
         detailNovelty.classList.add("hidden");
         detailPaper.classList.remove("hidden");
 
-        detailTitle.textContent    = paper.title;
-        detailAuthors.textContent  = paper.authors.join(", ");
-        detailVenue.textContent    = paper.venue;
-        detailYear.textContent     = paper.year;
-        detailCite.textContent     = paper.citations.toLocaleString();
-        detailSim.textContent      = (paper.similarity * 100).toFixed(0) + "%";
+        detailTitle.textContent = paper.title;
+        detailAuthors.textContent = paper.authors.join(", ");
+        detailVenue.textContent = paper.venue;
+        detailYear.textContent = paper.year;
+        detailCite.textContent = paper.citations.toLocaleString();
+        detailSim.textContent = (paper.similarity * 100).toFixed(0) + "%";
         detailAbstract.textContent = paper.abstract;
         if (paper.url) {
             detailLink.href = paper.url;
@@ -401,8 +401,10 @@
         // Labels
         node.append("text")
             .text((d) => {
-                if (d.id === "uploaded") return "📄 Your Paper";
-                const short = d.title.length > 25 ? d.title.slice(0, 22) + "…" : d.title;
+                if (d.id === "uploaded") {
+                    const label = d.title.length > 28 ? d.title.slice(0, 25) + "…" : d.title;
+                    return `📌 ${label}`;
+                }
                 return `${d.authors[0].split(" ").pop()}, ${d.year}`;
             })
             .attr("dy", (d) => getRadius(d) + 14)
@@ -422,7 +424,7 @@
             `;
             const [x, y] = d3.pointer(event, graphContainer);
             graphTooltip.style.left = (x + 16) + "px";
-            graphTooltip.style.top  = (y - 10) + "px";
+            graphTooltip.style.top = (y - 10) + "px";
         }).on("mouseout", () => {
             graphTooltip.classList.add("hidden");
         }).on("click", (event, d) => {
@@ -466,7 +468,7 @@
         // Store refs for highlight
         window._graphNodes = node;
         window._graphLinks = link;
-        window._graphData  = { nodes, links };
+        window._graphData = { nodes, links };
     }
 
     function highlightNode(id) {

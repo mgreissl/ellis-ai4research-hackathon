@@ -280,18 +280,37 @@ def analyze():
             "similarity": p["similarity"],
         })
 
-    # Add the uploaded paper as the center node
-    nodes.insert(0, {
-        "id": "uploaded",
-        "title": "Your Paper",
-        "authors": ["You"],
-        "year": 2024,
-        "venue": "Uploaded",
-        "citations": 0,
-        "abstract": "The paper you uploaded for analysis.",
-        "url": None,
-        "similarity": 1.0,
-    })
+    # Determine center node metadata
+    paper_id = request.form.get("paper_id")
+    center_paper = None
+    if paper_id:
+        center_paper = next((p for p in MOCK_PAPERS if p["id"] == paper_id), None)
+
+    # Add the origin paper as the center node
+    if center_paper:
+        nodes.insert(0, {
+            "id": "uploaded",
+            "title": center_paper["title"],
+            "authors": center_paper["authors"],
+            "year": center_paper["year"],
+            "venue": center_paper["venue"],
+            "citations": center_paper["citations"],
+            "abstract": center_paper["abstract"],
+            "url": center_paper["url"],
+            "similarity": 1.0,
+        })
+    else:
+        nodes.insert(0, {
+            "id": "uploaded",
+            "title": "Your Paper",
+            "authors": ["You"],
+            "year": 2024,
+            "venue": "Uploaded",
+            "citations": 0,
+            "abstract": "The paper you uploaded for analysis.",
+            "url": None,
+            "similarity": 1.0,
+        })
 
     edges = []
     # Connect uploaded paper to all similar papers
