@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NoveltyScope — Research Paper Novelty Checker</title>
+    <meta name="description" content="Analyze academic papers for novelty using embedding-based similarity search. Upload a PDF and discover related work.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- ─── TOP BAR ─── -->
+    <header id="top-bar">
+        <div class="logo">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="12" stroke="url(#gLogo)" stroke-width="2.5"/><circle cx="14" cy="14" r="5" fill="url(#gLogo)"/><defs><linearGradient id="gLogo" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs></svg>
+            <span>Novelty<strong>Scope</strong></span>
+        </div>
+        <nav>
+            <button class="nav-pill active" data-view="analyze">Analyze</button>
+        </nav>
+    </header>
+
+    <!-- ─── UPLOAD OVERLAY (initial state) ─── -->
+    <section id="upload-overlay" class="visible">
+        <div id="upload-card">
+            <div id="drop-zone">
+                <div class="drop-icon">
+                    <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+                        <rect x="4" y="8" width="48" height="40" rx="6" stroke="currentColor" stroke-width="2.5" stroke-dasharray="6 4"/>
+                        <path d="M28 20v16M20 28h16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <h2>Drop your paper here</h2>
+                <p>Drag &amp; drop a PDF, or click to browse</p>
+                <input type="file" id="file-input" accept=".pdf" hidden>
+                <button id="browse-btn" class="btn-primary">Browse Files</button>
+            </div>
+
+            <div id="file-preview" class="hidden">
+                <div class="file-icon">📄</div>
+                <span id="file-name"></span>
+                <button id="remove-file" title="Remove">✕</button>
+            </div>
+
+            <div class="divider-or"><span>or</span></div>
+
+            <div id="search-section">
+                <label class="search-label">Search for an existing paper</label>
+                <div class="search-wrapper">
+                    <svg class="search-icon" width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <circle cx="7.5" cy="7.5" r="5.5" stroke="currentColor" stroke-width="2"/>
+                        <path d="M12 12l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <input type="text" id="search-input" placeholder="e.g. Attention Is All You Need, LoRA, GPT-3…" autocomplete="off">
+                    <div id="search-results" class="hidden"></div>
+                </div>
+            </div>
+
+            <div id="search-preview" class="hidden">
+                <div class="file-icon">📑</div>
+                <span id="search-paper-name"></span>
+                <button id="remove-search" title="Remove">✕</button>
+            </div>
+
+            <div class="controls-row">
+                <div class="control-group">
+                    <label for="year-cutoff">Year cutoff</label>
+                    <div class="year-select-wrapper">
+                        <select id="year-cutoff">
+                            <option value="2015">2015</option>
+                            <option value="2016">2016</option>
+                            <option value="2017" selected>2017</option>
+                            <option value="2018">2018</option>
+                            <option value="2019">2019</option>
+                            <option value="2020">2020</option>
+                            <option value="2021">2021</option>
+                            <option value="2022">2022</option>
+                            <option value="2023">2023</option>
+                            <option value="2024">2024</option>
+                            <option value="2025">2025</option>
+                        </select>
+                    </div>
+                </div>
+                <button id="analyze-btn" class="btn-primary btn-lg" disabled>
+                    <span class="btn-text">Analyze Novelty</span>
+                    <span class="btn-loader hidden">
+                        <svg class="spinner" width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="2.5" fill="none" stroke-dasharray="40 20"/></svg>
+                    </span>
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── RESULTS (three-panel layout) ─── -->
+    <main id="results" class="hidden">
+        <!-- LEFT PANEL: Similar Papers List -->
+        <aside id="panel-left">
+            <div class="panel-header">
+                <h3>Similar Papers</h3>
+                <span id="paper-count" class="badge">0</span>
+            </div>
+            <div id="paper-list"></div>
+        </aside>
+
+        <!-- CENTER: Graph Visualisation -->
+        <section id="panel-center">
+            <div id="graph-toolbar">
+                <button id="btn-back" class="btn-ghost" title="Back to upload">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M11 4L6 9l5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    New Analysis
+                </button>
+                <div class="toolbar-center">
+                    <div id="traffic-light">
+                        <div class="light red" data-level="low"></div>
+                        <div class="light yellow" data-level="medium"></div>
+                        <div class="light green" data-level="high"></div>
+                    </div>
+                    <div id="novelty-badge">
+                        <span id="novelty-label">Novelty</span>
+                        <span id="novelty-score">—</span>
+                    </div>
+                </div>
+                <div class="toolbar-right">
+                    <label for="year-cutoff-inline" class="inline-label">Cutoff</label>
+                    <select id="year-cutoff-inline" class="select-sm"></select>
+                </div>
+            </div>
+            <div id="graph-container">
+                <svg id="graph-svg"></svg>
+                <div id="graph-tooltip" class="hidden"></div>
+            </div>
+            <div id="graph-legend">
+                <span class="legend-item"><span class="legend-dot" style="background:var(--year-old)"></span>Older</span>
+                <span class="legend-item"><span class="legend-dot" style="background:var(--year-new)"></span>Newer</span>
+                <span class="legend-item"><span class="legend-sizer"></span> = Citations</span>
+            </div>
+        </section>
+
+        <!-- RIGHT PANEL: Detail / TLDR -->
+        <aside id="panel-right">
+            <div id="detail-novelty">
+                <h3>Novelty Assessment</h3>
+                <div id="detail-traffic-light" class="traffic-lg">
+                    <div class="light red" data-level="low"></div>
+                    <div class="light yellow" data-level="medium"></div>
+                    <div class="light green" data-level="high"></div>
+                </div>
+                <div id="detail-score-ring">
+                    <svg viewBox="0 0 120 120">
+                        <circle cx="60" cy="60" r="52" class="ring-bg"/>
+                        <circle cx="60" cy="60" r="52" class="ring-fg" id="score-ring-fg"/>
+                    </svg>
+                    <span id="detail-score-value">—</span>
+                </div>
+                <p id="detail-tldr" class="tldr-text"></p>
+            </div>
+            <div id="detail-paper" class="hidden">
+                <button id="detail-close" class="btn-ghost">← Back to Novelty</button>
+                <h3 id="detail-title"></h3>
+                <p class="detail-meta">
+                    <span id="detail-authors"></span><br>
+                    <span id="detail-venue"></span> · <span id="detail-year"></span>
+                </p>
+                <div class="detail-stats">
+                    <div class="stat">
+                        <span class="stat-value" id="detail-citations">—</span>
+                        <span class="stat-label">Citations</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value" id="detail-similarity">—</span>
+                        <span class="stat-label">Similarity</span>
+                    </div>
+                </div>
+                <p id="detail-abstract" class="abstract-text"></p>
+                <a id="detail-link" class="btn-primary btn-sm" href="#" target="_blank" rel="noopener">Open on arXiv →</a>
+            </div>
+        </aside>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
