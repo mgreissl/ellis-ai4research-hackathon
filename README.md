@@ -1,6 +1,10 @@
 # Eureka Check
 
+## **What it does**
+
 Analyze academic papers for novelty by finding similar work and computing a novelty score.
+
+![Screenshot](resources/Screenshot%202026-08-20%20at%2014.11.56.png)
 
 ## Setup
 
