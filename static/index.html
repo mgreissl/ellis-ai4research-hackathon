@@ -17,9 +17,6 @@
             <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="12" stroke="url(#gLogo)" stroke-width="2.5"/><circle cx="14" cy="14" r="5" fill="url(#gLogo)"/><defs><linearGradient id="gLogo" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs></svg>
             <span>Eureka<strong>Check</strong></span>
         </div>
-        <nav>
-            <button class="nav-pill active" data-view="analyze">Analyze</button>
-        </nav>
     </header>
 
     <!-- ─── UPLOAD OVERLAY (initial state) ─── -->
@@ -69,11 +66,12 @@
                     <label for="year-cutoff">Year cutoff</label>
                     <div class="year-select-wrapper">
                         <select id="year-cutoff">
+                            <option value="auto" selected>Auto (Paper's Published Year)</option>
                             <option value="all">All years (No cutoff)</option>
                             <option value="2015">≤ 2015</option>
                             <option value="2016">≤ 2016</option>
                             <option value="2017">≤ 2017</option>
-                            <option value="2018" selected>≤ 2018</option>
+                            <option value="2018">≤ 2018</option>
                             <option value="2019">≤ 2019</option>
                             <option value="2020">≤ 2020</option>
                             <option value="2021">≤ 2021</option>
@@ -136,6 +134,7 @@
                 <span class="legend-item"><span class="legend-dot" style="background:#f97316"></span>Origin Paper</span>
                 <span class="legend-item"><span class="legend-dot" style="background:#6366f1"></span>Prior Art (≤ Cutoff)</span>
                 <span class="legend-item"><span class="legend-dot" style="background:#22d3ee"></span>Subsequent (> Cutoff)</span>
+                <span class="legend-item"><span class="legend-dot" style="background:#ec4899"></span>Author Draft / Revision</span>
                 <span class="legend-item"><span class="legend-sizer"></span> = High Similarity</span>
             </div>
         </section>
@@ -143,7 +142,38 @@
         <!-- RIGHT PANEL: Detail / TLDR -->
         <aside id="panel-right">
             <div id="detail-novelty">
-                <h3>Novelty Assessment</h3>
+                <div class="header-with-info">
+                    <h3>Novelty Assessment</h3>
+                    <div class="info-tooltip-container">
+                        <span class="info-icon-btn" tabindex="0" title="Score explanation">ⓘ</span>
+                        <div class="info-popover">
+                            <div class="popover-title">Score Guide</div>
+                            <div class="popover-badge-list">
+                                <div class="popover-item">
+                                    <span class="light-dot green"></span>
+                                    <div class="popover-item-text">
+                                        <strong>High Novelty (≥ 65%)</strong>
+                                        <span>Pioneering work; low similarity to prior art.</span>
+                                    </div>
+                                </div>
+                                <div class="popover-item">
+                                    <span class="light-dot yellow"></span>
+                                    <div class="popover-item-text">
+                                        <strong>Medium Novelty (35% – 64%)</strong>
+                                        <span>Meaningful advance or divergence over existing methods.</span>
+                                    </div>
+                                </div>
+                                <div class="popover-item">
+                                    <span class="light-dot red"></span>
+                                    <div class="popover-item-text">
+                                        <strong>Low Novelty (&lt; 35%)</strong>
+                                        <span>High thematic overlap with existing literature.</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div id="detail-traffic-light" class="traffic-lg">
                     <div class="light red" data-level="low"></div>
                     <div class="light yellow" data-level="medium"></div>

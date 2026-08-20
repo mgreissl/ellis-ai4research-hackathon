@@ -281,6 +281,16 @@
             });
         });
 
+        if (novelty.year_cutoff) {
+            const autoOpt = yearInline.querySelector('option[value="auto"]');
+            if (autoOpt) {
+                autoOpt.textContent = `Auto (≤ ${novelty.year_cutoff})`;
+            }
+        }
+        if (novelty.cutoff_mode) {
+            yearInline.value = novelty.cutoff_mode;
+        }
+
         detailTldr.textContent = tldr;
     }
 
@@ -296,9 +306,14 @@
             el.className = "paper-item";
             const authorsShort = (p.authors || "Unknown").split(",")[0].trim();
             const yearStr = p.year ? `<span>${p.year}</span>` : '';
-            const statusBadge = p.status === 'prior'
-                ? `<span class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; font-size:10px;">Prior Art</span>`
-                : (p.status === 'subsequent' ? `<span class="badge" style="background:rgba(34,211,238,0.2); color:#67e8f9; font-size:10px;">Subsequent</span>` : '');
+            let statusBadge = '';
+            if (p.status === 'self') {
+                statusBadge = `<span class="badge" style="background:rgba(236,72,153,0.22); color:#f472b6; border:1px solid rgba(236,72,153,0.35); font-size:10px;">Author Preprint</span>`;
+            } else if (p.status === 'prior') {
+                statusBadge = `<span class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; font-size:10px;">Prior Art</span>`;
+            } else if (p.status === 'subsequent') {
+                statusBadge = `<span class="badge" style="background:rgba(34,211,238,0.2); color:#67e8f9; font-size:10px;">Subsequent</span>`;
+            }
 
             el.innerHTML = `
                 <div class="pi-title">${esc(p.title)}</div>
@@ -341,16 +356,24 @@
             detailCategory.textContent = paper.arxiv_category ? `arXiv: ${paper.arxiv_category}` : (paper.venue || "General");
         }
         if (detailStatusBadge) {
-            if (paper.status === 'prior') {
+            if (paper.status === 'self') {
+                detailStatusBadge.textContent = "Author Preprint / Revision";
+                detailStatusBadge.style.display = "inline-block";
+                detailStatusBadge.style.background = "rgba(236,72,153,0.22)";
+                detailStatusBadge.style.color = "#f472b6";
+                detailStatusBadge.style.border = "1px solid rgba(236,72,153,0.35)";
+            } else if (paper.status === 'prior') {
                 detailStatusBadge.textContent = "Prior Art (≤ Cutoff)";
                 detailStatusBadge.style.display = "inline-block";
                 detailStatusBadge.style.background = "rgba(99,102,241,0.25)";
                 detailStatusBadge.style.color = "#a5b4fc";
+                detailStatusBadge.style.border = "none";
             } else if (paper.status === 'subsequent') {
                 detailStatusBadge.textContent = "Subsequent (> Cutoff)";
                 detailStatusBadge.style.display = "inline-block";
                 detailStatusBadge.style.background = "rgba(34,211,238,0.2)";
                 detailStatusBadge.style.color = "#67e8f9";
+                detailStatusBadge.style.border = "none";
             } else {
                 detailStatusBadge.style.display = "none";
             }
@@ -405,10 +428,13 @@
 
         // Force simulation
         simulation = d3.forceSimulation(nodes)
-            .force("link", d3.forceLink(links).id((d) => d.id).distance(100).strength((d) => d.weight * 0.6))
-            .force("charge", d3.forceManyBody().strength(-300))
-            .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius((d) => getRadius(d) + 6));
+            .force("link", d3.forceLink(links)
+                .id((d) => d.id)
+                .distance((d) => (d.source.id === "uploaded" || d.target.id === "uploaded" ? 170 : 130))
+                .strength((d) => Math.min(0.7, d.weight * 0.5)))
+            .force("charge", d3.forceManyBody().strength(-600).distanceMax(500))
+            .force("center", d3.forceCenter(width / 2, height / 2).strength(0.8))
+            .force("collision", d3.forceCollide().radius((d) => getRadius(d) + 22).strength(0.9));
 
         // Links
         const link = svg.append("g")
@@ -436,12 +462,18 @@
             .attr("r", (d) => getRadius(d))
             .attr("fill", (d) => {
                 if (d.id === "uploaded") return "#f97316";
+                if (d.status === "self") return "#ec4899";
                 if (d.status === "prior") return "#6366f1";
                 if (d.status === "subsequent") return "#22d3ee";
                 return simScale(d.similarity || 0.5);
             })
-            .attr("stroke", (d) => d.id === "uploaded" ? "#fbbf24" : (d.status === "prior" ? "#818cf8" : "rgba(255,255,255,0.12)"))
-            .attr("stroke-width", (d) => d.id === "uploaded" ? 3 : 1.5)
+            .attr("stroke", (d) => {
+                if (d.id === "uploaded") return "#fbbf24";
+                if (d.status === "self") return "#f472b6";
+                if (d.status === "prior") return "#818cf8";
+                return "rgba(255,255,255,0.12)";
+            })
+            .attr("stroke-width", (d) => (d.id === "uploaded" || d.status === "self" ? 3 : 1.5))
             .attr("opacity", 0.9);
 
         // Labels
@@ -465,7 +497,7 @@
         node.on("mouseover", (event, d) => {
             if (d.id === "uploaded") return;
             graphTooltip.classList.remove("hidden");
-            const statusLabel = d.status === 'prior' ? ' · Prior Art' : (d.status === 'subsequent' ? ' · Subsequent' : '');
+            const statusLabel = d.status === 'self' ? ' · Author Draft / Revision' : (d.status === 'prior' ? ' · Prior Art' : (d.status === 'subsequent' ? ' · Subsequent' : ''));
             const yrLabel = d.year ? ` · ${d.year}` : '';
             graphTooltip.innerHTML = `
                 <div class="tt-title">${esc(d.title)}</div>

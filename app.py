@@ -47,16 +47,26 @@ CHUNK_BOUNDARIES = np.array_split(np.arange(len(VECTORS)), NUM_CHUNKS)
 def _init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+def _init_db():
+    """Initialize SQLite database for caching publication metadata and dates."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS paper_metadata (
             paper_id TEXT PRIMARY KEY,
             title TEXT,
             year INTEGER,
+            pub_date TEXT,
             arxiv_id TEXT,
             url TEXT,
             venue TEXT
         )
     """)
+    # Ensure pub_date column exists if table was created previously
+    try:
+        c.execute("ALTER TABLE paper_metadata ADD COLUMN pub_date TEXT")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -71,13 +81,13 @@ def _get_cached_metadata(paper_ids: list[str]) -> dict:
     c = conn.cursor()
     placeholders = ",".join("?" for _ in paper_ids)
     c.execute(
-        f"SELECT paper_id, year, arxiv_id, url, venue FROM paper_metadata WHERE paper_id IN ({placeholders})",
+        f"SELECT paper_id, year, pub_date, arxiv_id, url, venue FROM paper_metadata WHERE paper_id IN ({placeholders})",
         [str(pid) for pid in paper_ids],
     )
     rows = c.fetchall()
     conn.close()
     return {
-        r[0]: {"year": r[1], "arxiv_id": r[2], "url": r[3], "venue": r[4]}
+        r[0]: {"year": r[1], "pub_date": r[2] or (str(r[1]) if r[1] else None), "arxiv_id": r[3], "url": r[4], "venue": r[5]}
         for r in rows
     }
 
@@ -90,8 +100,8 @@ def _save_cached_metadata_batch(records: list[tuple]):
     c = conn.cursor()
     c.executemany(
         """
-        INSERT OR REPLACE INTO paper_metadata (paper_id, title, year, arxiv_id, url, venue)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO paper_metadata (paper_id, title, year, pub_date, arxiv_id, url, venue)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         records,
     )
@@ -101,8 +111,8 @@ def _save_cached_metadata_batch(records: list[tuple]):
 
 def _scrape_single_paper_metadata(item: tuple[str, str]) -> tuple[str, dict]:
     """
-    Scrape publication year and URL for a paper via arXiv API with Crossref fallback.
-    Returns (paper_id, {year, url, arxiv_id, venue}).
+    Scrape publication year, exact date, and URL for a paper via arXiv API with Crossref fallback.
+    Returns (paper_id, {year, pub_date, url, arxiv_id, venue}).
     """
     pid, title = item
     clean = re.sub(r"[^\w\s]", " ", title).strip()
@@ -110,20 +120,21 @@ def _scrape_single_paper_metadata(item: tuple[str, str]) -> tuple[str, dict]:
 
     # 1. Try arXiv API with title search
     try:
-        q = urllib.parse.quote(clean[:75])
-        url = f'https://export.arxiv.org/api/query?search_query=ti:"{q}"&max_results=2'
+        q_enc = urllib.parse.quote(f'ti:"{clean[:65]}"')
+        url = f"https://export.arxiv.org/api/query?search_query={q_enc}&max_results=2"
         req = urllib.request.Request(url, headers={"User-Agent": "EurekaCheck/1.0"})
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
             content = resp.read().decode("utf-8")
             entries = content.split("<entry>")
             for e in entries[1:]:
-                p_m = re.search(r"<published>(\d{4})", e)
+                p_m = re.search(r"<published>(\d{4}-\d{2}-\d{2})", e)
                 id_m = re.search(r"<id>(http://arxiv.org/abs/([^<]+))</id>", e)
                 if p_m:
-                    year = int(p_m.group(1))
+                    pub_date = p_m.group(1)
+                    year = int(pub_date[:4])
                     arxiv_url = id_m.group(1) if id_m else f"https://arxiv.org/abs/{id_m.group(2)}" if id_m else ""
                     arxiv_id = id_m.group(2) if id_m else ""
-                    return pid, {"year": year, "arxiv_id": arxiv_id, "url": arxiv_url, "venue": "arXiv"}
+                    return pid, {"year": year, "pub_date": pub_date, "arxiv_id": arxiv_id, "url": arxiv_url, "venue": "arXiv"}
     except Exception:
         pass
 
@@ -132,17 +143,29 @@ def _scrape_single_paper_metadata(item: tuple[str, str]) -> tuple[str, dict]:
         q = urllib.parse.quote(clean[:80])
         url = f"https://api.crossref.org/works?query.bibliographic={q}&rows=1"
         req = urllib.request.Request(url, headers={"User-Agent": "EurekaCheck/1.0 (mailto:ai4research@hackathon.org)"})
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
             data = json.loads(resp.read().decode())
             items = data.get("message", {}).get("items", [])
             if items:
                 item_data = items[0]
                 d_parts = item_data.get("published-print", item_data.get("published-online", item_data.get("created", {}))).get("date-parts", [[None]])
-                year = d_parts[0][0]
+                parts = d_parts[0]
+                year = parts[0] if parts and len(parts) > 0 else None
+                month = parts[1] if parts and len(parts) > 1 else None
+                day = parts[2] if parts and len(parts) > 2 else None
+                
+                pub_date = None
+                if year and month and day:
+                    pub_date = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+                elif year and month:
+                    pub_date = f"{int(year):04d}-{int(month):02d}"
+                elif year:
+                    pub_date = f"{int(year):04d}"
+
                 doi_url = item_data.get("URL", "")
                 venue = item_data.get("container-title", [""])[0] if item_data.get("container-title") else "Publication"
                 if year and 1950 <= int(year) <= 2026:
-                    return pid, {"year": int(year), "arxiv_id": "", "url": doi_url, "venue": venue}
+                    return pid, {"year": int(year), "pub_date": pub_date, "arxiv_id": "", "url": doi_url, "venue": venue}
     except Exception:
         pass
 
@@ -150,9 +173,9 @@ def _scrape_single_paper_metadata(item: tuple[str, str]) -> tuple[str, dict]:
     yr_match = re.search(r"\b(19\d\d|20[0-2]\d)\b", title)
     if yr_match:
         yr = int(yr_match.group(1))
-        return pid, {"year": yr, "arxiv_id": "", "url": "", "venue": ""}
+        return pid, {"year": yr, "pub_date": str(yr), "arxiv_id": "", "url": "", "venue": ""}
 
-    return pid, {"year": None, "arxiv_id": "", "url": "", "venue": ""}
+    return pid, {"year": None, "pub_date": None, "arxiv_id": "", "url": "", "venue": ""}
 
 
 def _resolve_papers_metadata(papers_list: list[dict]) -> dict[str, dict]:
@@ -163,7 +186,7 @@ def _resolve_papers_metadata(papers_list: list[dict]) -> dict[str, dict]:
     pids = [p["id"] for p in papers_list]
     cached = _get_cached_metadata(pids)
 
-    missing = [p for p in papers_list if p["id"] not in cached or cached[p["id"]]["year"] is None]
+    missing = [p for p in papers_list if p["id"] not in cached or (cached[p["id"]]["year"] is None and cached[p["id"]].get("pub_date") is None)]
 
     if missing:
         to_scrape = [(p["id"], p["title"]) for p in missing]
@@ -176,7 +199,7 @@ def _resolve_papers_metadata(papers_list: list[dict]) -> dict[str, dict]:
             # Find title
             title = next((p["title"] for p in missing if p["id"] == pid), "")
             if meta["year"] is not None:
-                records_to_save.append((pid, title, meta["year"], meta["arxiv_id"], meta["url"], meta["venue"]))
+                records_to_save.append((pid, title, meta["year"], meta.get("pub_date"), meta["arxiv_id"], meta["url"], meta["venue"]))
 
         if records_to_save:
             _save_cached_metadata_batch(records_to_save)
@@ -224,58 +247,125 @@ def _paper_row_to_dict(idx: int, similarity: float = 0.0) -> dict:
 # ---------------------------------------------------------------------------
 # Field Calibration & Cutoff-Aware Novelty Scoring
 # ---------------------------------------------------------------------------
+# s_novel = similarity at or below which a paper in this domain is considered 100% novel (score = 1.0)
+# S_DUP = similarity at or above which two papers are considered near-duplicates (score = 0.0)
+S_DUP = 0.975
+
 FIELD_CALIBRATION = {
-    # Computer Science
-    "cs.CL": {"bounds": (0.66, 0.93), "name": "Computation & Language (cs.CL)"},
-    "cs.CV": {"bounds": (0.65, 0.92), "name": "Computer Vision (cs.CV)"},
-    "cs.LG": {"bounds": (0.64, 0.91), "name": "Machine Learning (cs.LG)"},
-    "cs.AI": {"bounds": (0.62, 0.90), "name": "Artificial Intelligence (cs.AI)"},
-    "cs.RO": {"bounds": (0.56, 0.87), "name": "Robotics (cs.RO)"},
-    "cs.CR": {"bounds": (0.54, 0.85), "name": "Cryptography & Security (cs.CR)"},
-    "cs.NE": {"bounds": (0.56, 0.87), "name": "Neural & Evolutionary (cs.NE)"},
-    "cs.IR": {"bounds": (0.58, 0.88), "name": "Information Retrieval (cs.IR)"},
-    "cs": {"bounds": (0.58, 0.89), "name": "Computer Science (General)"},
+    # Computer Science & AI
+    "cs.CL": {"name": "Computation & Language", "s_novel": 0.65},
+    "cs.CV": {"name": "Computer Vision", "s_novel": 0.65},
+    "cs.LG": {"name": "Machine Learning", "s_novel": 0.66},
+    "cs.AI": {"name": "Artificial Intelligence", "s_novel": 0.64},
+    "cs.RO": {"name": "Robotics", "s_novel": 0.62},
+    "cs.NE": {"name": "Neural & Evolutionary", "s_novel": 0.60},
+    "cs.CR": {"name": "Cryptography & Security", "s_novel": 0.58},
+    "cs.IR": {"name": "Information Retrieval", "s_novel": 0.62},
+    "cs.DC": {"name": "Distributed Computing", "s_novel": 0.55},
+    "cs.SE": {"name": "Software Engineering", "s_novel": 0.56},
+    "cs.DB": {"name": "Databases", "s_novel": 0.55},
+    "cs.HC": {"name": "Human-Computer Interaction", "s_novel": 0.58},
+    "cs":    {"name": "Computer Science (General)", "s_novel": 0.60},
+
+    # Statistics & Data Science
+    "stat.ML": {"name": "Statistical Machine Learning", "s_novel": 0.64},
+    "stat.ME": {"name": "Methodology", "s_novel": 0.54},
+    "stat.TH": {"name": "Statistical Theory", "s_novel": 0.50},
+    "stat":    {"name": "Statistics (General)", "s_novel": 0.55},
 
     # Mathematics
-    "math.PR": {"bounds": (0.44, 0.78), "name": "Probability (math.PR)"},
-    "math.AP": {"bounds": (0.44, 0.78), "name": "Analysis of PDEs (math.AP)"},
-    "math.CO": {"bounds": (0.42, 0.76), "name": "Combinatorics (math.CO)"},
-    "math.AG": {"bounds": (0.42, 0.76), "name": "Algebraic Geometry (math.AG)"},
-    "math": {"bounds": (0.44, 0.78), "name": "Mathematics (General)"},
+    "math.OC": {"name": "Optimization & Control", "s_novel": 0.55},
+    "math.PR": {"name": "Probability Theory", "s_novel": 0.46},
+    "math.ST": {"name": "Mathematical Statistics", "s_novel": 0.50},
+    "math.NA": {"name": "Numerical Analysis", "s_novel": 0.48},
+    "math.CO": {"name": "Combinatorics", "s_novel": 0.44},
+    "math.FA": {"name": "Functional Analysis", "s_novel": 0.42},
+    "math.AP": {"name": "Analysis of PDEs", "s_novel": 0.42},
+    "math":    {"name": "Mathematics (General)", "s_novel": 0.46},
 
-    # Physics & Astronomy
-    "hep-ph": {"bounds": (0.48, 0.84), "name": "High Energy Physics - Phenomenology (hep-ph)"},
-    "hep-th": {"bounds": (0.48, 0.84), "name": "High Energy Physics - Theory (hep-th)"},
-    "hep": {"bounds": (0.48, 0.84), "name": "High Energy Physics"},
-    "quant-ph": {"bounds": (0.50, 0.84), "name": "Quantum Physics (quant-ph)"},
-    "gr-qc": {"bounds": (0.46, 0.80), "name": "General Relativity & Quantum Cosmology (gr-qc)"},
-    "cond-mat": {"bounds": (0.48, 0.83), "name": "Condensed Matter"},
-    "astro-ph": {"bounds": (0.48, 0.83), "name": "Astrophysics"},
-    "physics": {"bounds": (0.46, 0.82), "name": "Physics (General)"},
+    # Physics
+    "physics.soc-ph": {"name": "Social Physics", "s_novel": 0.52},
+    "quant-ph":       {"name": "Quantum Physics", "s_novel": 0.50},
+    "cond-mat":       {"name": "Condensed Matter", "s_novel": 0.48},
+    "hep-th":         {"name": "High Energy Physics - Theory", "s_novel": 0.44},
+    "hep-ph":         {"name": "High Energy Physics - Phenom", "s_novel": 0.46},
+    "astro-ph":       {"name": "Astrophysics", "s_novel": 0.50},
+    "gr-qc":          {"name": "General Relativity & Quantum", "s_novel": 0.44},
+    "physics":         {"name": "Physics (General)", "s_novel": 0.48},
 
-    # Statistics & Electrical Eng & Bio & Finance
-    "stat.ML": {"bounds": (0.62, 0.90), "name": "Statistical Machine Learning (stat.ML)"},
-    "stat": {"bounds": (0.50, 0.84), "name": "Statistics (General)"},
-    "eess": {"bounds": (0.50, 0.82), "name": "Electrical Eng & Systems Science (eess)"},
-    "q-bio": {"bounds": (0.48, 0.82), "name": "Quantitative Biology (q-bio)"},
-    "q-fin": {"bounds": (0.48, 0.80), "name": "Quantitative Finance (q-fin)"},
-    "default": {"bounds": (0.50, 0.88), "name": "General Literature"},
+    # Quantitative Biology & Finance
+    "q-bio": {"name": "Quantitative Biology", "s_novel": 0.52},
+    "q-fin": {"name": "Quantitative Finance", "s_novel": 0.52},
+    "eess":  {"name": "Electrical & Systems Engineering", "s_novel": 0.54},
+    "econ":  {"name": "Economics", "s_novel": 0.50},
+
+    "default": {"name": "General Domain", "s_novel": 0.55},
 }
 
 
-def _get_field_info(category: str | None) -> tuple[tuple[float, float], str]:
-    if not category or pd.isna(category) or category == "<NA>" or category == "":
-        return FIELD_CALIBRATION["default"]["bounds"], FIELD_CALIBRATION["default"]["name"]
+def _get_field_info(category: str | None) -> tuple[float, str]:
+    """Retrieve calibrated domain threshold and friendly name for arXiv category."""
+    if not category or pd.isna(category):
+        return FIELD_CALIBRATION["default"]["s_novel"], "General Domain"
 
     cat_str = str(category).strip()
+
     if cat_str in FIELD_CALIBRATION:
-        return FIELD_CALIBRATION[cat_str]["bounds"], FIELD_CALIBRATION[cat_str]["name"]
+        return FIELD_CALIBRATION[cat_str]["s_novel"], f"{FIELD_CALIBRATION[cat_str]['name']} ({cat_str})"
 
     prefix = cat_str.split(".")[0] if "." in cat_str else cat_str.split("-")[0]
     if prefix in FIELD_CALIBRATION:
-        return FIELD_CALIBRATION[prefix]["bounds"], f"{FIELD_CALIBRATION[prefix]['name']} ({cat_str})"
+        return FIELD_CALIBRATION[prefix]["s_novel"], f"{FIELD_CALIBRATION[prefix]['name']} ({cat_str})"
 
-    return FIELD_CALIBRATION["default"]["bounds"], f"Field: {cat_str}"
+    return FIELD_CALIBRATION["default"]["s_novel"], f"Field: {cat_str}"
+
+
+# ---------------------------------------------------------------------------
+# Preprint & Author Revision Detection
+# ---------------------------------------------------------------------------
+def _normalize_name(name: str) -> str:
+    parts = re.sub(r"[^\w\s]", "", name.lower()).split()
+    return parts[-1] if parts else ""
+
+
+def _parse_authors(author_str: str | None) -> set[str]:
+    if not author_str or pd.isna(author_str) or author_str == "Unknown" or author_str == "<NA>":
+        return set()
+    names = re.split(r"[,;]|\band\b", str(author_str))
+    return {_normalize_name(n) for n in names if _normalize_name(n)}
+
+
+def _is_self_work(title_a: str, authors_a: str, title_b: str, authors_b: str, sim: float) -> bool:
+    """
+    Detect if paper B is an author preprint, revision, or earlier draft of paper A.
+    """
+    set_a = _parse_authors(authors_a)
+    set_b = _parse_authors(authors_b)
+
+    if set_a and set_b:
+        overlap = len(set_a & set_b)
+        union = len(set_a | set_b)
+        jaccard = overlap / union if union else 0
+        if jaccard >= 0.33 and sim > 0.82:
+            return True
+        first_a = list(set_a)[0]
+        first_b = list(set_b)[0]
+        if first_a == first_b and sim > 0.86:
+            return True
+
+    # Title revision / subtitle overlap check
+    words_a = set(re.sub(r"[^\w\s]", "", title_a.lower()).split())
+    words_b = set(re.sub(r"[^\w\s]", "", title_b.lower()).split())
+    if words_a and words_b:
+        t_overlap = len(words_a & words_b) / max(1, len(words_a | words_b))
+        if t_overlap >= 0.65 and sim > 0.88:
+            return True
+
+    # Extremely high embedding similarity (near identical text)
+    if sim >= 0.965:
+        return True
+
+    return False
 
 
 def _compute_novelty(
@@ -284,14 +374,15 @@ def _compute_novelty(
     year_cutoff: int | None = None,
     prior_art_count: int = 0,
     total_count: int = 0,
+    self_works_count: int = 0,
 ) -> dict:
     """
     Compute a field-calibrated and cutoff-aware novelty score (0.0 to 1.0 / 0-100%).
+    Excludes author self-works/preprints from penalizing novelty.
     """
-    (s_min, s_max), field_name = _get_field_info(category)
+    s_novel, field_name = _get_field_info(category)
 
     if not similarities:
-        # If no prior art exists prior to cutoff, it is highly novel
         if year_cutoff and prior_art_count == 0 and total_count > 0:
             return {
                 "score": 95,
@@ -301,7 +392,8 @@ def _compute_novelty(
                 "top_similarity": 0.0,
                 "year_cutoff": year_cutoff,
                 "prior_art_count": 0,
-                "tldr": f"Exceptional historical novelty (0.95 / 1.00) relative to literature published on or before {year_cutoff}. None of the {total_count} related papers existed at this cutoff point, indicating this work was groundbreaking prior art.",
+                "self_works_count": self_works_count,
+                "tldr": f"Exceptional historical novelty (0.95 / 1.00) relative to literature published before {year_cutoff}. None of the {total_count} related papers existed at this cutoff point, indicating this work was groundbreaking prior art.",
             }
         return {
             "score": 50,
@@ -311,40 +403,41 @@ def _compute_novelty(
             "top_similarity": 0.5,
             "year_cutoff": year_cutoff,
             "prior_art_count": prior_art_count,
+            "self_works_count": self_works_count,
             "tldr": "Not enough data to assess novelty.",
         }
 
     top_sim = float(np.mean(similarities[:min(3, len(similarities))]))
 
-    raw_norm = (s_max - top_sim) / (s_max - s_min)
+    # Continuous scaling: S_DUP (0.975) -> 0.0, s_novel -> 1.0
+    raw_norm = (S_DUP - top_sim) / (S_DUP - s_novel)
     score_norm = float(np.clip(raw_norm, 0.0, 1.0))
     score = int(round(score_norm * 100))
 
-    cutoff_str = f" relative to literature up to {year_cutoff}" if year_cutoff else ""
+    cutoff_str = f" relative to literature published before {year_cutoff}" if year_cutoff else ""
+    self_note = f" (excluded {self_works_count} author preprint/revision from prior art)" if self_works_count > 0 else ""
 
     if score >= 65:
         level = "high"
         tldr = (
-            f"High novelty ({score_norm:.2f} / 1.00){cutoff_str} in {field_name}. "
-            f"Its nearest prior-art similarity of {top_sim:.2f} is well below the domain's "
-            f"crowded threshold ({s_max:.2f}), suggesting this contribution occupied an unpopulated "
-            f"region of the literature at this cutoff."
+            f"High novelty ({score_norm:.2f} / 1.00){cutoff_str} in {field_name}{self_note}. "
+            f"Its nearest prior-art similarity of {top_sim:.2f} is well below typical subfield clusters, "
+            f"suggesting this contribution introduces distinct techniques or explores an uncrowded problem domain."
         )
     elif score >= 35:
         level = "medium"
         tldr = (
-            f"Moderate novelty ({score_norm:.2f} / 1.00){cutoff_str} within {field_name}. "
+            f"Moderate novelty ({score_norm:.2f} / 1.00){cutoff_str} in {field_name}{self_note}. "
             f"The nearest prior art has an average similarity of {top_sim:.2f}. While there is "
-            f"thematic overlap with earlier methods, it demonstrates meaningful divergence "
+            f"clear thematic overlap with existing methods, it demonstrates meaningful divergence "
             f"from pre-existing work."
         )
     else:
         level = "low"
         tldr = (
-            f"Low novelty ({score_norm:.2f} / 1.00){cutoff_str} in {field_name}. "
-            f"The closest prior art has a high average similarity of {top_sim:.2f} (near the "
-            f"field ceiling of {s_max:.2f}). Several pre-existing works covered closely related "
-            f"techniques or problem formulations."
+            f"Low novelty ({score_norm:.2f} / 1.00){cutoff_str} in {field_name}{self_note}. "
+            f"The closest prior art has a high average similarity of {top_sim:.2f}, reflecting a "
+            f"dense literature cluster with multiple closely related papers covering similar methods or formulations."
         )
 
     return {
@@ -355,6 +448,7 @@ def _compute_novelty(
         "top_similarity": round(top_sim, 3),
         "year_cutoff": year_cutoff,
         "prior_art_count": prior_art_count,
+        "self_works_count": self_works_count,
         "tldr": tldr,
     }
 
@@ -394,6 +488,7 @@ def search_papers():
             "authors": str(row["authors"]) if pd.notna(row["authors"]) else "Unknown",
             "arxiv_category": str(row["arxiv_category"]) if pd.notna(row["arxiv_category"]) else "",
             "year": meta.get("year"),
+            "pub_date": meta.get("pub_date"),
             "row_idx": int(idx),
         })
     return jsonify(results)
@@ -403,13 +498,12 @@ def search_papers():
 def analyze():
     """
     Accepts a paper_id (from search) or PDF upload + year_cutoff.
-    Enriches papers with publication years, applies date cutoff, and returns
-    field-calibrated novelty score & similarity graph.
+    Enriches papers with publication years & dates, detects author preprints/revisions,
+    applies strict chronological cutoff, and returns field-calibrated novelty score & similarity graph.
     """
     paper_id_str = request.form.get("paper_id")
     row_idx_str = request.form.get("row_idx")
-    year_cutoff_str = request.form.get("year_cutoff")
-    year_cutoff = int(year_cutoff_str) if year_cutoff_str and year_cutoff_str != "all" else None
+    year_cutoff_str = request.form.get("year_cutoff", "auto")
     k = int(request.form.get("k", 18))
 
     query_idx = None
@@ -437,37 +531,87 @@ def analyze():
     # Enrich center paper with resolved metadata
     c_meta = metadata_map.get(center_meta["id"], {})
     center_meta["year"] = c_meta.get("year")
+    center_meta["pub_date"] = c_meta.get("pub_date")
     center_meta["url"] = c_meta.get("url") or f"https://scholar.google.com/scholar?q={urllib.parse.quote(center_meta['title'])}"
     center_meta["venue"] = c_meta.get("venue") or center_meta.get("arxiv_category")
 
-    # Enrich similar papers with resolved metadata and prior_art flags
+    # Determine effective cutoff mode
+    is_auto_mode = (year_cutoff_str == "auto" or not year_cutoff_str)
+    effective_year_cutoff = None
+    if is_auto_mode:
+        effective_year_cutoff = center_meta.get("year")
+    elif year_cutoff_str != "all":
+        try:
+            effective_year_cutoff = int(year_cutoff_str)
+        except ValueError:
+            effective_year_cutoff = center_meta.get("year")
+
+    # Enrich similar papers with resolved metadata, preprint detection, and strict prior_art flags
+    self_works_count = 0
     for p in similar_papers:
         meta = metadata_map.get(p["id"], {})
         p["year"] = meta.get("year")
+        p["pub_date"] = meta.get("pub_date")
         p["url"] = meta.get("url") or f"https://scholar.google.com/scholar?q={urllib.parse.quote(p['title'])}"
         p["venue"] = meta.get("venue") or p.get("arxiv_category")
 
-        # Classify relation to year cutoff
-        if year_cutoff is not None and p["year"] is not None:
-            p["is_prior_art"] = p["year"] <= year_cutoff
-            p["status"] = "prior" if p["year"] <= year_cutoff else "subsequent"
+        # Detect author preprints / revisions / self-works
+        is_self = _is_self_work(
+            center_meta["title"], center_meta["authors"],
+            p["title"], p["authors"],
+            p["similarity"]
+        )
+        p["is_self_work"] = is_self
+
+        # Classify relation to cutoff / prior art
+        if is_self:
+            p["is_prior_art"] = False
+            p["status"] = "self"
+            self_works_count += 1
+        elif is_auto_mode:
+            # Auto mode: evaluate strictly prior to the paper itself
+            p_date = p.get("pub_date")
+            c_date = center_meta.get("pub_date")
+            p_yr = p.get("year")
+            c_yr = center_meta.get("year")
+
+            if p_date and c_date and p_date != c_date:
+                # Direct ISO date comparison (e.g. "2017-03-01" < "2017-06-12")
+                is_prior = p_date < c_date
+            elif p_yr is not None and c_yr is not None:
+                # If exact month missing: strict '<' ensures successors from the same year are excluded!
+                is_prior = p_yr < c_yr
+            else:
+                is_prior = False
+
+            p["is_prior_art"] = is_prior
+            p["status"] = "prior" if is_prior else "subsequent"
+        elif effective_year_cutoff is not None and p["year"] is not None:
+            # Manual year cutoff selected (e.g. <= 2018)
+            is_prior = p["year"] <= effective_year_cutoff
+            p["is_prior_art"] = is_prior
+            p["status"] = "prior" if is_prior else "subsequent"
         else:
             p["is_prior_art"] = True
-            p["status"] = "all"
+            p["status"] = "prior"
 
-    # Compute novelty score evaluated specifically against PRIOR ART (<= cutoff)
-    if year_cutoff is not None:
-        prior_art_sims = [p["similarity"] for p in similar_papers if p.get("is_prior_art")]
+    # Compute novelty score evaluated specifically against external PRIOR ART (excluding self-works and successors)
+    if effective_year_cutoff is not None or is_auto_mode:
+        competing_prior_art = [p["similarity"] for p in similar_papers if p.get("is_prior_art") and not p.get("is_self_work")]
     else:
-        prior_art_sims = [p["similarity"] for p in similar_papers]
+        competing_prior_art = [p["similarity"] for p in similar_papers if not p.get("is_self_work")]
 
     novelty = _compute_novelty(
-        prior_art_sims,
+        competing_prior_art,
         category=center_meta.get("arxiv_category"),
-        year_cutoff=year_cutoff,
-        prior_art_count=len(prior_art_sims),
+        year_cutoff=effective_year_cutoff,
+        prior_art_count=len(competing_prior_art),
         total_count=len(similar_papers),
+        self_works_count=self_works_count,
     )
+    novelty["cutoff_mode"] = year_cutoff_str
+    novelty["paper_year"] = center_meta.get("year")
+    novelty["paper_date"] = center_meta.get("pub_date")
 
     # Build graph nodes
     nodes = [
@@ -485,21 +629,20 @@ def analyze():
             "weight": p["similarity"],
         })
 
-    # Pairwise similarities among retrieved papers
-    top_indices = [idx for idx, _ in top_results]
-    if len(top_indices) > 1:
-        top_vecs = np.asarray(VECTORS[top_indices], dtype=np.float32)
-        sim_matrix = top_vecs @ top_vecs.T
+    # Compute pairwise similarities among similar papers for cluster connections
+    sim_indices = [PAPER_ID_TO_IDX[int(p["id"])] for p in similar_papers if int(p["id"]) in PAPER_ID_TO_IDX]
+    if len(sim_indices) > 1:
+        sub_vecs = np.asarray(VECTORS[sim_indices], dtype=np.float32)
+        pw_sims = sub_vecs @ sub_vecs.T
 
-        threshold = 0.52
-        for i in range(len(top_indices)):
-            for j in range(i + 1, len(top_indices)):
-                sim = float(sim_matrix[i, j])
-                if sim > threshold:
+        for i in range(len(sim_indices)):
+            for j in range(i + 1, len(sim_indices)):
+                w = float(pw_sims[i, j])
+                if w >= 0.72:
                     edges.append({
                         "source": similar_papers[i]["id"],
                         "target": similar_papers[j]["id"],
-                        "weight": sim,
+                        "weight": round(w, 4),
                     })
 
     return jsonify({
